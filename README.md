@@ -3,4 +3,4 @@
 Collections of RL experiments:
 
 - Q-Learning
-- Deep Q
+- Deep Q Learning
