@@ -1,0 +1,11 @@
+tensorflow==1.7.1
+Pillow>=4.2.1
+matplotlib
+jupyter
+pytest>=3.2.2
+docopt
+pyyaml
+grpcio==1.11.0
+pandas
+scipy
+ipykernel
