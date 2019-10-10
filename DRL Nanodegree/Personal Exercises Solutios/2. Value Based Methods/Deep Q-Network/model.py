@@ -16,7 +16,6 @@ class QNetwork(nn.Module):
         """
         super(QNetwork, self).__init__()
         self.seed = torch.manual_seed(seed)
-        "*** YOUR CODE HERE ***"
         self.state_size = state_size
         self.action_size = action_size
 
