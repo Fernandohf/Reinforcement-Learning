@@ -1,6 +1,6 @@
 # Reinforcement Learning
 
-Collections of RL experiments:
+Collections of Reinforcement Learning experiments:
 
 - Q-Learning
 - Deep Q Learning
