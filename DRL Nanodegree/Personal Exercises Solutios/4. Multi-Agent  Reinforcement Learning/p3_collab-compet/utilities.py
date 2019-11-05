@@ -1,125 +1,136 @@
-import os
+import random
 import torch
-import torch.nn.functional as F
-import torch.distributed as dist
-from torch.autograd import Variable
 import numpy as np
-from collections import namedtuple
+from copy import copy
+from collections import namedtuple, deque
+from itertools import islice
 
 
-class Settings():
-    """
-    Configurations for all the algorithms hyperparameters.
+class OUNoise:
+    """Ornstein-Uhlenbeck process."""
 
-    """
-    def __init__(self, **kwargs):
-        """Stores the hyper-parameters as named tuple "Parameters".
+    def __init__(self, size, seed, mu=0., theta=.15, sigma=.2):
+        """Initialize parameters and noise process."""
+        self.mu = mu * np.ones(size)
+        self.theta = theta
+        self.sigma = sigma
+        self.seed = random.seed(seed)
+        self.reset()
+
+    def reset(self):
+        """Reset the internal state (= noise) to mean (mu)."""
+        self.state = copy(self.mu)
+
+    def sample(self):
+        """Update internal state and return it as a noise sample."""
+        x = self.state
+        dx = self.theta * (self.mu - x) + self.sigma * np.array([random.random() for i in range(len(x))])
+        self.state = x + dx
+        return self.state
+
+
+class ReplayBuffer:
+    """Fixed-size buffer to store experience tuples."""
+
+    def __init__(self, buffer_size, batch_size, seed, device):
+        """Initialize a ReplayBuffer object.
+        Params
+        ======
+            buffer_size (int): maximum size of buffer
+            batch_size (int): size of each training batch
         """
-        # stores
-        self._parameters = namedtuple('Hyperparameters', kwargs.keys())(*kwargs.values())
+        self.memory = deque(maxlen=buffer_size)  # internal memory (deque)
+        self.batch_size = batch_size
+        self.experience = namedtuple("Experience", field_names=["state", "action", "reward", "next_state", "done"])
+        self.seed = random.seed(seed)
+        self.device = device
 
-    @property
-    def values(self):
-        return self._parameters
+    def add(self, state, action, reward, next_state, done):
+        """Add a new experience to memory."""
+        e = self.experience(state, action, reward, next_state, done)
+        self.memory.append(e)
+
+    def sample(self):
+        """Randomly sample a batch of experiences from memory."""
+        experiences = random.sample(self.memory, k=self.batch_size)
+
+        states = torch.from_numpy(np.stack([e.state for e in experiences if e
+                                            is not None], axis=0)).float().to(self.device)
+        actions = torch.from_numpy(np.stack([e.action for e in experiences if e
+                                             is not None], axis=0)).float().to(self.device)
+        rewards = torch.from_numpy(np.stack([e.reward for e in experiences if e
+                                             is not None], axis=0)).float().to(self.device)
+        next_states = torch.from_numpy(np.stack([e.next_state for e in experiences if e
+                                                 is not None], axis=0)).float().to(self.device)
+        dones = torch.from_numpy(np.stack([e.done for e in experiences if e
+                                           is not None], axis=0).astype(np.uint8)).float().to(self.device)
+        return (states, actions, rewards, next_states, dones)
+
+    def __len__(self):
+        """Return the current size of internal memory."""
+        return len(self.memory)
 
 
-def transpose_list(mylist):
-    return list(map(list, zip(*mylist)))
+def train_MADDPG(env, agent, n_episodes=2000, max_t=500, success_score=30, deque_len=100, print_every=10,
+                 brain_name='TennisBrain'):
+    """Deep Deterministic Policy Gradients
 
-def transpose_to_tensor(input_list):
-    make_tensor = lambda x: torch.tensor(x, dtype=torch.float)
-    return list(map(make_tensor, zip(*input_list)))
-
-
-# https://github.com/ikostrikov/pytorch-ddpg-naf/blob/master/ddpg.py#L11
-def soft_update(target, source, tau):
+    Params
+    ======
+        n_episodes (int): maximum number of training episodes
+        max_t (int): maximum number of timesteps per episode
+        success_score (float): average score to consider the task solved.
     """
-    Perform DDPG soft update (move target params toward source based on weight
-    factor tau)
-    Inputs:
-        target (torch.nn.Module): Net to copy parameters to
-        source (torch.nn.Module): Net whose parameters to copy
-        tau (float, 0 < x < 1): Weight factor for update
-    """
-    for target_param, param in zip(target.parameters(), source.parameters()):
-        target_param.data.copy_(target_param.data * (1.0 - tau) + param.data * tau)
+    scores_deque = deque(maxlen=deque_len)
+    sum_scores_per_agent = []
+    scores = []
+    solved = False
+    for i_episode in range(1, n_episodes + 1):
+        env_info = env.reset(train_mode=True)[brain_name]   # reset the environment
+        states = env_info.vector_observations               # get the current states
+        scores_per_episode = []
+        agent.reset()
+        for t in range(max_t):
+            actions = agent.act(states)
+            env_info = env.step(actions)[brain_name]                 # perform actions
+            next_states = env_info.vector_observations               # get the next states
+            rewards = np.array(env_info.rewards).reshape(-1, 1)      # get the rewards
+            dones = np.array(env_info.local_done).reshape(-1, 1)     # see if episode has finished
+            agent.step(states, actions, rewards, next_states, dones)
+            states = next_states
+            scores_per_episode.append(rewards)
+            if dones.any():
+                break
+        # Scores
+        scores_per_episode = np.concatenate(scores_per_episode, axis=1)              # Scores along the episode
+        sum_scores_per_agent.append(scores_per_episode.sum(axis=1).reshape(-1, 1))   # Sum of scores per agent
+        max_score = np.max(scores_per_episode.sum(axis=1).reshape(-1, 1))                # Max agent sum of scores
+        scores_deque.append(max_score)
+        scores.append(max_score)
+#         import pdb; pdb.set_trace()
 
-# https://github.com/ikostrikov/pytorch-ddpg-naf/blob/master/ddpg.py#L15
-def hard_update(target, source):
-    """
-    Copy network parameters from source to target
-    Inputs:
-        target (torch.nn.Module): Net to copy parameters to
-        source (torch.nn.Module): Net whose parameters to copy
-    """
-    for target_param, param in zip(target.parameters(), source.parameters()):
-        target_param.data.copy_(param.data)
+        mean_deque_score = np.mean(scores_deque)
+        print('\rEpisode {:3d}/{}\tAverage Score (last {:3d}): {:.4f}\t Last score: {:.4f}'.format(i_episode,
+                                                                                                   n_episodes,
+                                                                                                   min(i_episode, 100),
+                                                                                                   mean_deque_score,
+                                                                                                   max_score), end="")
+        if i_episode % print_every == 0:
+            reversed_deque = copy(scores_deque)
+            reversed_deque.reverse()
+            mean_last_n = np.mean(list(islice(reversed_deque, 0, print_every)))
+            agent.save_models("checkpoint")
+            print('\rEpisode {:3d}/{}\tAverage Score (last {:3d}): {:.4f}\t Last score: {:.4f}'.format(i_episode,
+                                                                                                       n_episodes,
+                                                                                                       print_every,
+                                                                                                       mean_last_n,
+                                                                                                       max_score))
+        if mean_deque_score >= success_score and not solved:
+            agent.save_models("solved")
+            print('\rSolved on Episode {:3d}/{}\tAverage Score (last {:3d}): {:.4f}'.format(i_episode,
+                                                                                            n_episodes,
+                                                                                            min(i_episode, 100),
+                                                                                            mean_deque_score))
+            solved = True
 
-# https://github.com/seba-1511/dist_tuto.pth/blob/gh-pages/train_dist.py
-def average_gradients(model):
-    """ Gradient averaging. """
-    size = float(dist.get_world_size())
-    for param in model.parameters():
-        dist.all_reduce(param.grad.data, op=dist.reduce_op.SUM, group=0)
-        param.grad.data /= size
-
-# https://github.com/seba-1511/dist_tuto.pth/blob/gh-pages/train_dist.py
-def init_processes(rank, size, fn, backend='gloo'):
-    """ Initialize the distributed environment. """
-    os.environ['MASTER_ADDR'] = '127.0.0.1'
-    os.environ['MASTER_PORT'] = '29500'
-    dist.init_process_group(backend, rank=rank, world_size=size)
-    fn(rank, size)
-
-def onehot_from_logits(logits, eps=0.0):
-    """
-    Given batch of logits, return one-hot sample using epsilon greedy strategy
-    (based on given epsilon)
-    """
-    # get best (according to current policy) actions in one-hot form
-    argmax_acs = (logits == logits.max(1, keepdim=True)[0]).float()
-    if eps == 0.0:
-        return argmax_acs
-    # get random actions in one-hot form
-    rand_acs = Variable(torch.eye(logits.shape[1])[[np.random.choice(
-        range(logits.shape[1]), size=logits.shape[0])]], requires_grad=False)
-    # chooses between best and random actions using epsilon greedy
-    return torch.stack([argmax_acs[i] if r > eps else rand_acs[i] for i, r in
-                        enumerate(torch.rand(logits.shape[0]))])
-
-# modified for PyTorch from https://github.com/ericjang/gumbel-softmax/blob/master/Categorical%20VAE.ipynb
-def sample_gumbel(shape, eps=1e-20, tens_type=torch.FloatTensor):
-    """Sample from Gumbel(0, 1)"""
-    U = Variable(tens_type(*shape).uniform_(), requires_grad=False)
-    return -torch.log(-torch.log(U + eps) + eps)
-
-# modified for PyTorch from https://github.com/ericjang/gumbel-softmax/blob/master/Categorical%20VAE.ipynb
-def gumbel_softmax_sample(logits, temperature):
-    """ Draw a sample from the Gumbel-Softmax distribution"""
-    y = logits + sample_gumbel(logits.shape, tens_type=type(logits.data))
-    return F.softmax(y / temperature, dim=1)
-
-# modified for PyTorch from https://github.com/ericjang/gumbel-softmax/blob/master/Categorical%20VAE.ipynb
-def gumbel_softmax(logits, temperature=0.5, hard=False):
-    """Sample from the Gumbel-Softmax distribution and optionally discretize.
-    Args:
-      logits: [batch_size, n_class] unnormalized log-probs
-      temperature: non-negative scalar
-      hard: if True, take argmax, but differentiate w.r.t. soft sample y
-    Returns:
-      [batch_size, n_class] sample from the Gumbel-Softmax distribution.
-      If hard=True, then the returned sample will be one-hot, otherwise it will
-      be a probabilitiy distribution that sums to 1 across classes
-    """
-    y = gumbel_softmax_sample(logits, temperature)
-    if hard:
-        y_hard = onehot_from_logits(y)
-        y = (y_hard - y).detach() + y
-    return y
-
-"""def main():
-    torch.Tensor()
-    print(onehot_from_logits())
-
-if __name__=='__main__':
-    main()"""
+    return scores

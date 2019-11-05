@@ -2,147 +2,238 @@
 # policy + critic updates
 # see ddpg.py for other details in the network
 
-from ddpg import DDPGAgent
 import torch
-from utilities import Settings
+import numpy as np
+from model import Actor, Critic
+from torch.optim import Adam
+import torch.nn.functional as F
+from utilities import ReplayBuffer, OUNoise
+from types import SimpleNamespace
 
 PARAMETERS = {
-    'BUFFER_SIZE': int(1e5),      # Replay buffer size
-    'BATCH_SIZE': 128,            # Minibatch size
-    'GAMMA': 1.0,                 # Discount factor
-    'TAU': 1e-3,                  # Soft update of target parameters
-    'LR_ACTOR': 1e-3,             # Learning rate of the actor
-    'LR_CRITIC': 1e-3,            # Learning rate of the critic
-    'WEIGHT_DECAY': .0001,        # L2 weight decay
-    'UPDATE_EVERY_N_STEPS': 5,    # Number of step wait before update
-    'UPDATE_N_TIMES': 10,         # Number of updates
-    'GRADIENT_CLIP_VALUE': 2,     # Max gradient modulus for clipping
-    # 'LR_STEP_SIZE': 30,         # LR step size
-    # 'LR_GAMMA': .2,             # LR gamma multiplier
-    'OU_THETA': .15,              # OU noise theta parameter
-    'OU_SIGMA': .1,               # OU noise sigma parameters
-    'DEVICE': torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    'BUFFER_SIZE': int(1e5),          # Replay buffer size
+    'BATCH_SIZE': 128,                # Minibatch size
+    'GAMMA': 1.0,                     # Discount factor
+    'TAU': 1e-3,                      # Soft update of target parameters
+    'N_AGENTS': 2,                    # Total number of agents
+    'STATE_SIZE': 24,                 # Size of the state for each agent
+    'ACTION_SIZE': 2,                 # Size of actions for each agent
 
+    'ACTOR_LR': 1e-3,                 # Learning rate of the actor
+    'ACTOR_WEIGHT_DECAY': 0.0,        # Actor L2 weight decay
+    'ACTOR_GRADIENT_CLIP_VALUE': 10,  # Max gradient modulus for clipping
+
+    'CRITIC_LR': 1e-3,                # Learning rate of the critic
+    'CRITIC_WEIGHT_DECAY': 0.0,       # Critic L2 weight decay
+    'CRITIC_GRADIENT_CLIP_VALUE': 2,  # Max gradient modulus for clipping
+
+    'UPDATE_EVERY_N_STEPS': 5,        # Number of step wait before update
+    'UPDATE_N_TIMES': 10,             # Number of updates
+
+    # 'LR_STEP_SIZE': 30,             # LR step size
+    # 'LR_GAMMA': .2,                 # LR gamma multiplier
+    'OU_THETA': .15,                  # OU noise theta parameter
+    'OU_SIGMA': .1,                   # OU noise sigma parameters
+
+    'SEED': 42,                       # Random seed
+    'DEVICE': torch.device("cuda" if torch.cuda.is_available() else "cpu"),
 }
-DEFAULT_SETTINGS = Settings(PARAMETERS)
+DEFAULT_SETTINGS = SimpleNamespace(**PARAMETERS)
 
 
-class MADDPG(DDPGAgent):
+class MADDPG:
     """
     Implements a Multi Agent Deep Deterministic Policy Gradient.
-
-    It uses a centralized training approach to a
+    It uses a centralized training approach to train the critic and decentralized for the actors.
 
     Parametes
     ----------
     settings: Settings object
-        An object with all the hyperparameters for the model
-        Requires the following value
+        An object with all the hyperparameters for the model.
+        If not prodived the default settings will be used (see above).
+
     """
-    def __init__(self, settings=DEFAULT_SETTINGS):
+    def __init__(self, parameters=None):
         super(MADDPG, self).__init__()
 
-        # critic input = obs_full + actions = 14+2+2+2=20
-        self.maddpg_agent = [DDPGAgent(),
-                             DDPGAgent(14, 16, 8, 2, 20, 32, 16)]
+        # Parameters
+        if parameters is None:
+            self.set = DEFAULT_SETTINGS
+        else:
+            self.set = SimpleNamespace(**parameters)
 
-        self.iter = 0
+        # MADDPG Actors/Critic - Local and Target Networks - Decentralized
+        self.actors_local = []
+        self.actors_target = []
+        self.actors_optimizer = []
+        for i in range(self.set.N_AGENTS):
+            self.actors_local.append(Actor(self.set.STATE_SIZE, self.set.ACTION_SIZE,
+                                           self.set.SEED).to(self.set.DEVICE))
+            self.actors_target.append(Actor(self.set.STATE_SIZE, self.set.ACTION_SIZE,
+                                            self.set.SEED).to(self.set.DEVICE))
+            self.actors_optimizer.append(Adam(self.actors_local[i].parameters(),
+                                              lr=self.set.ACTOR_LR,
+                                              weight_decay=self.set.ACTOR_WEIGHT_DECAY))
 
-    def get_local_actors(self):
-        """get actors of all the agents in the MADDPG object"""
-        actors = [ddpg_agent.actor_local for ddpg_agent in self.maddpg_agent]
-        return actors
+        # MADDPG Critic - Local and Target Networks - Centralized
+        self.critic_local = Critic(self.set.STATE_SIZE * self.set.N_AGENTS,
+                                   self.set.ACTION_SIZE * self.set.N_AGENTS,
+                                   self.set.SEED).to(self.set.DEVICE)
+        self.critic_target = Critic(self.set.STATE_SIZE * self.set.N_AGENTS,
+                                    self.set.ACTION_SIZE * self.set.N_AGENTS,
+                                    self.set.SEED).to(self.set.DEVICE)
+        self.critic_optimizer = Adam(self.critic_local.parameters(),
+                                     lr=self.set.CRITIC_LR,
+                                     weight_decay=self.set.CRITIC_WEIGHT_DECAY)
 
-    def get_target_actors(self):
-        """get target_actors of all the agents in the MADDPG object"""
-        target_actors = [ddpg_agent.actor_target for ddpg_agent in self.maddpg_agent]
-        return target_actors
+        # Noise process
+        self.noise = OUNoise(self.set.ACTION_SIZE * self.set.N_AGENTS, self.set.SEED,
+                             theta=self.set.OU_THETA, sigma=self.set.OU_SIGMA)
 
-    def act(self, obs_all_agents):
-        """get actions from all agents in the MADDPG object"""
-        actions = [agent.act(obs) for agent, obs in zip(self.maddpg_agent, obs_all_agents)]
-        return actions
+        # Replay buffer
+        self.memory = ReplayBuffer(self.set.BUFFER_SIZE, self.set.BATCH_SIZE,
+                                   self.set.SEED, self.set.DEVICE)
 
-    # def target_act(self, obs_all_agents, noise=0.0):
-    #     """get target network actions from all the agents in the MADDPG object """
-    #     target_actions = [ddpg_agent.target_act(obs, noise) for ddpg_agent, obs in zip(self.maddpg_agent, obs_all_agents)]
-    #     return target_actions
-
-    def update(self, samples, agent_number, logger):
+    def step(self, state, action, reward, next_state, done):
         """
-        Update the critics and actors of all the agents
+        Save experience in replay memory, and use random sample from buffer to learn.
 
+        Parameters
+        ----------
+        state: np.ndarray
+            States from the environment
+        action: np.ndarray
+            Actions from the environment
+        reward: np.ndarray
+            Rewards from the environment
+        next_states: np.ndarray
+            Next states from the environment given actions
+        done: np.ndarray
+            Weather or not the environment has reached the end
         """
+        # Save experience / reward
+        self.memory.add(state, action, reward, next_state, done)
+        # self.update_every = self._step_count
 
-        # need to transpose each element of the samples
-        # to flip obs[parallel_agent][agent_number] to
-        # obs[agent_number][parallel_agent]
-        obs, obs_full, action, reward, next_obs, next_obs_full, done = map(transpose_to_tensor, samples)
+        # Learn, if enough samples are available in memory
+        if len(self.memory) > self.set.BATCH_SIZE:
+            experiences = self.memory.sample()
+            self.learn(experiences, self.set.GAMMA)
 
-        obs_full = torch.stack(obs_full)
-        next_obs_full = torch.stack(next_obs_full)
+    def act(self, states, add_noise=True):
+        """
+        Returns actions for given state as per current policy.
 
-        agent = self.maddpg_agent[agent_number]
-        agent.critic_optimizer.zero_grad()
+        Parameters
+        ----------
+        states: np.ndarray
+            States from the environment with shape (N_AGENTS, STATE_SIZE)
+        """
+        # Actions for each agent
+        actions = []
+        for i in range(self.set.N_AGENTS):
+            state = torch.from_numpy(states[i][np.newaxis]).float().to(self.set.DEVICE)
+            self.actors_local[i].eval()
+            with torch.no_grad():
+                actions.append(self.actors_local[i](state).cpu().data.numpy())
+            self.actors_local[i].train()
+        actions = np.vstack(actions)
 
-        #critic loss = batch mean of (y- Q(s,a) from target network)^2
-        #y = reward of this timestep + discount * Q(st+1,at+1) from target network
-        target_actions = self.target_act(next_obs)
-        target_actions = torch.cat(target_actions, dim=1)
+        # Add noise
+        if add_noise:
+            actions += self.noise.sample().reshape(actions.shape)
 
-        target_critic_input = torch.cat((next_obs_full.t(),target_actions), dim=1).to(device)
+        # Clip actions values
+        return np.clip(actions, -1, 1)
 
-        with torch.no_grad():
-            q_next = agent.target_critic(target_critic_input)
+    def reset(self):
+        """
+        Auxiliary function to reset OU noise
+        """
+        self.noise.reset()
 
-        y = reward[agent_number].view(-1, 1) + self.discount_factor * q_next * (1 - done[agent_number].view(-1, 1))
-        action = torch.cat(action, dim=1)
-        critic_input = torch.cat((obs_full.t(), action), dim=1).to(device)
-        q = agent.critic(critic_input)
+    def learn(self, experiences, gamma):
+        """Update policy and value parameters using given batch of experience tuples.
+        Q_targets = r + γ * critic_target(next_state, actor_target(next_state))
+        where:
+            actor_target(state) -> action
+            critic_target(state, action) -> Q-value
 
-        huber_loss = torch.nn.SmoothL1Loss()
-        critic_loss = huber_loss(q, y.detach())
+        Parameters
+        ----------
+            experiences: Tuple[torch.Tensor]
+                Tuple with (s, a, r, s', done) and first dimension equal to BATCH_SIZE
+            gamma (float): discount factor
+        """
+        states, actions, rewards, next_states, dones = experiences
+
+        # ---------------------------- update critic ---------------------------- #
+        # Get predicted next-state actions and Q values from target models for each agent
+        actions_next = []
+        for i in range(self.set.N_AGENTS):  # BS, AGENT, SIZE
+            actions_next.append(self.actors_target[i](next_states[:, i, :]))
+        actions_next = torch.stack(actions_next)
+
+        Q_targets_next = self.critic_target(next_states.view(-1, self.set.N_AGENTS * self.set.STATE_SIZE),
+                                            actions_next.view(-1, self.set.N_AGENTS * self.set.ACTION_SIZE))
+        # Compute Q targets for current states (y_i)
+        sum_rewards = rewards.sum(dim=1)
+        sum_dones = dones.sum(dim=1)
+        Q_targets = sum_rewards + (gamma * Q_targets_next * (1 - sum_dones))  # Sum rewards for each agent
+        # Compute critic loss
+        Q_expected = self.critic_local(states.view(-1, self.set.N_AGENTS * self.set.STATE_SIZE),
+                                       actions.view(-1, self.set.N_AGENTS * self.set.ACTION_SIZE))
+        critic_loss = F.mse_loss(Q_expected, Q_targets)
+        # Minimize the loss
+        self.critic_optimizer.zero_grad()
         critic_loss.backward()
-        #torch.nn.utils.clip_grad_norm_(agent.critic.parameters(), 0.5)
-        agent.critic_optimizer.step()
+        # Clip gradients
+        torch.nn.utils.clip_grad_norm_(self.critic_local.parameters(), self.set.CRITIC_GRADIENT_CLIP_VALUE)
+        self.critic_optimizer.step()
+        # self.critic_lr_scheduler.step()
 
-        #update actor network using policy gradient
-        agent.actor_optimizer.zero_grad()
-        # make input to agent
-        # detach the other agents to save computation
-        # saves some time for computing derivative
-        q_input = [ self.maddpg_agent[i].actor(ob) if i == agent_number \
-                   else self.maddpg_agent[i].actor(ob).detach()
-                   for i, ob in enumerate(obs) ]
+        # ---------------------------- update actor ---------------------------- #
+        # Compute actor loss
+        actions_pred = []
+        for i in range(self.set.N_AGENTS):  # BS, AGENT, SIZE
+            actions_pred.append(self.actors_target[i](states[:, i, :]))
+        actions_pred = torch.stack(actions_pred, dim=1)
+        actor_loss = -self.critic_local(states.view(-1, self.set.N_AGENTS * self.set.STATE_SIZE),
+                                        actions_pred.view(-1, self.set.N_AGENTS * self.set.ACTION_SIZE)).mean()
+        # Minimize the loss for each agent
+        for i in range(self.set.N_AGENTS):  # BS, AGENT, SIZE
+            agent_optimizer = self.actors_optimizer[i]
+            agent_optimizer.zero_grad()
+            actor_loss.backward(retain_graph=True)
+            # Clip gradients
+            torch.nn.utils.clip_grad_norm_(self.actors_local[i].parameters(), self.set.ACTOR_GRADIENT_CLIP_VALUE)
+            agent_optimizer.step()
+        # self.actor_lr_scheduler.step()
 
-        q_input = torch.cat(q_input, dim=1)
-        # combine all the actions and observations for input to critic
-        # many of the obs are redundant, and obs[1] contains all useful information already
-        q_input2 = torch.cat((obs_full.t(), q_input), dim=1)
+        # ----------------------- update target networks ----------------------- #
+        self.soft_update(self.critic_local, self.critic_target, self.set.TAU)
+        for i in range(self.set.N_AGENTS):  # BS, AGENT, SIZE
+            self.soft_update(self.actors_local[i], self.actors_target[i], self.set.TAU)
 
-        # get the policy gradient
-        actor_loss = -agent.critic(q_input2).mean()
-        actor_loss.backward()
-        #torch.nn.utils.clip_grad_norm_(agent.actor.parameters(),0.5)
-        agent.actor_optimizer.step()
+    def soft_update(self, local_model, target_model, tau):
+        """Soft update model parameters.
+        θ_target = τ * θ_local + (1 - τ) * θ_target
 
-        al = actor_loss.cpu().detach().item()
-        cl = critic_loss.cpu().detach().item()
-        logger.add_scalars('agent%i/losses' % agent_number,
-                           {'critic loss': cl,
-                            'actor_loss': al},
-                           self.iter)
+        Params
+        ======
+            local_model: PyTorch model (weights will be copied from)
+            target_model: PyTorch model (weights will be copied to)
+            tau (float): interpolation parameter
+        """
+        for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
+            target_param.data.copy_(tau * local_param.data + (1.0 - tau) * target_param.data)
 
-    def update_targets(self):
-        """soft update targets"""
-        self.iter += 1
-        for ddpg_agent in self.maddpg_agent:
-            soft_update(ddpg_agent.target_actor, ddpg_agent.actor, self.tau)
-            soft_update(ddpg_agent.target_critic, ddpg_agent.critic, self.tau)
-
-
-
-
-
-
-
+    def save_models(self, name):
+        """
+        Saves the current state of the the actors and the critic.
+        """
+        # Actors
+        for i, a in enumerate(self.actors_local):
+            torch.save(a.state_dict(), f'Actor{i + 1}_{name}.pth')
+        # Critic
+        torch.save(self.critic_local.state_dict(), f'Critic_{name}.pth')

@@ -9,6 +9,20 @@ import torch.optim as optim
 # from torch.optim.lr_scheduler import StepLR
 
 
+BUFFER_SIZE = int(1e5)      # Replay buffer size
+BATCH_SIZE = 128            # Minibatch size
+GAMMA = 1.0                 # Discount factor
+TAU = 1e-3                  # Soft update of target parameters
+LR_ACTOR = 1e-3             # Learning rate of the actor
+LR_CRITIC = 1e-3            # Learning rate of the critic
+WEIGHT_DECAY = .000         # L2 weight decay
+UPDATE_EVERY_N_STEPS = 5    # Number of step wait before update
+UPDATE_N_TIMES = 10         # Number of updates
+GRADIENT_CLIP_VALUE = 2     # Max gradient modulus for clipping
+# LR_STEP_SIZE = 30         # LR step size
+# LR_GAMMA = .2             # LR gamma multiplier
+OU_THETA = .15              # OU noise parameters
+OU_SIGMA = .1               # OU noise parameters
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -142,29 +156,6 @@ class DDPGAgent():
         """
         for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
             target_param.data.copy_(tau * local_param.data + (1.0 - tau) * target_param.data)
-
-
-class OUNoise:
-    """Ornstein-Uhlenbeck process."""
-
-    def __init__(self, size, seed, mu=0., theta=OU_THETA, sigma=OU_SIGMA):
-        """Initialize parameters and noise process."""
-        self.mu = mu * np.ones(size)
-        self.theta = theta
-        self.sigma = sigma
-        self.seed = random.seed(seed)
-        self.reset()
-
-    def reset(self):
-        """Reset the internal state (= noise) to mean (mu)."""
-        self.state = copy.copy(self.mu)
-
-    def sample(self):
-        """Update internal state and return it as a noise sample."""
-        x = self.state
-        dx = self.theta * (self.mu - x) + self.sigma * np.array([random.random() for i in range(len(x))])
-        self.state = x + dx
-        return self.state
 
 
 class ReplayBuffer:
