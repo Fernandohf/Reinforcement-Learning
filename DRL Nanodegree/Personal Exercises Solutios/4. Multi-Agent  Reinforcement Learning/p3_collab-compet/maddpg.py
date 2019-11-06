@@ -62,8 +62,10 @@ class MADDPG:
         # Parameters
         if parameters is None:
             self.set = DEFAULT_SETTINGS
+            self._parameters = PARAMETERS
         else:
             self.set = SimpleNamespace(**parameters)
+            self._parameters = parameters
 
         # MADDPG Actors/Critic - Local and Target Networks - Decentralized
         self.actors_local = []
@@ -182,49 +184,51 @@ class MADDPG:
         # ---------------------------- Update Critic ---------------------------- #
         # Get predicted next-state actions and Q values from target models for each agent
         actions_next = []
-        for i in range(self.set.N_AGENTS):  # BS, AGENT, SIZE
-            actions_next.append(self.actors_target[i](next_states[:, i, :]))
-        actions_next = torch.stack(actions_next)
+        # For each agent
+        for curr_agent in range(self.set.N_AGENTS):  # BS, AGENT, SIZE
+            actions_next = [self.actors_target[a](next_states[:, a, :]) if a == curr_agent else
+                            self.actors_target[a](next_states[:, a, :]).detach()         # Detach other agent
+                            for a in range(self.set.N_AGENTS)]
+            actions_next = torch.stack(actions_next)
 
-        Q_targets_next = self.critic_target(next_states.view(-1, self.set.N_AGENTS * self.set.STATE_SIZE),
-                                            actions_next.view(-1, self.set.N_AGENTS * self.set.ACTION_SIZE))
-        # Compute Q targets for current states (y_i)
-        Q_targets = (rewards.view(-1, self.set.N_AGENTS) +
-                     (gamma * Q_targets_next * (1 - dones.view(-1, self.set.N_AGENTS))))
-        # Compute critic loss
-        Q_expected = self.critic_local(states.view(-1, self.set.N_AGENTS * self.set.STATE_SIZE),
-                                       actions.view(-1, self.set.N_AGENTS * self.set.ACTION_SIZE))
-        critic_loss = F.mse_loss(Q_expected, Q_targets)
-        # Minimize the loss
-        self.critic_optimizer.zero_grad()
-        critic_loss.backward()
-        # Clip gradients
-        torch.nn.utils.clip_grad_norm_(self.critic_local.parameters(), self.set.CRITIC_GRADIENT_CLIP_VALUE)
-        self.critic_optimizer.step()
-        # self.critic_lr_scheduler.step()
-
-        # ---------------------------- Update Actor ---------------------------- #
-        # Compute actor loss
-        actions_pred = []
-        for i in range(self.set.N_AGENTS):  # BS, AGENT, SIZE
-            actions_pred.append(self.actors_target[i](states[:, i, :]))
-        actions_pred = torch.stack(actions_pred, dim=1)
-        actor_loss = -self.critic_local(states.view(-1, self.set.N_AGENTS * self.set.STATE_SIZE),
-                                        actions_pred.view(-1, self.set.N_AGENTS * self.set.ACTION_SIZE)).mean()
-        # Minimize the loss for each agent
-        for i in range(self.set.N_AGENTS):  # BS, AGENT, SIZE
-            agent_optimizer = self.actors_optimizer[i]
-            agent_optimizer.zero_grad()
-            actor_loss.backward(retain_graph=True)
+            Q_targets_next = self.critic_target(next_states.view(-1, self.set.N_AGENTS * self.set.STATE_SIZE),
+                                                actions_next.view(-1, self.set.N_AGENTS * self.set.ACTION_SIZE))
+            # Compute Q targets for current states (y_i)
+            Q_targets = (rewards.view(-1, self.set.N_AGENTS)[:, curr_agent] +
+                         (gamma * Q_targets_next[:, curr_agent] * (1 - dones.view(-1, self.set.N_AGENTS)[:, curr_agent])))
+            # Compute critic loss
+            Q_expected = self.critic_local(states.view(-1, self.set.N_AGENTS * self.set.STATE_SIZE),
+                                           actions.view(-1, self.set.N_AGENTS * self.set.ACTION_SIZE))[:, curr_agent]
+            critic_loss = F.mse_loss(Q_expected, Q_targets)
+            # Minimize the loss
+            self.critic_optimizer.zero_grad()
+            critic_loss.backward()
             # Clip gradients
-            # torch.nn.utils.clip_grad_norm_(self.actors_local[i].parameters(), self.set.ACTOR_GRADIENT_CLIP_VALUE)
-            agent_optimizer.step()
-        # self.actor_lr_scheduler.step()
+            torch.nn.utils.clip_grad_norm_(self.critic_local.parameters(), self.set.CRITIC_GRADIENT_CLIP_VALUE)
+            self.critic_optimizer.step()
+            # self.critic_lr_scheduler.step()
 
-        # ----------------------- update target networks ----------------------- #
-        self.soft_update(self.critic_local, self.critic_target, self.set.TAU)
-        for i in range(self.set.N_AGENTS):  # BS, AGENT, SIZE
-            self.soft_update(self.actors_local[i], self.actors_target[i], self.set.TAU)
+            # ---------------------------- Update Actor ---------------------------- #
+            # Compute actor loss
+            actions_pred = [self.actors_target[a](states[:, a, :]) if a == curr_agent else
+                            self.actors_target[a](states[:, a, :]).detach()         # Detach other agent
+                            for a in range(self.set.N_AGENTS)]
+            actions_pred = torch.stack(actions_pred, dim=1)
+            actor_loss = -self.critic_local(states.view(-1, self.set.N_AGENTS * self.set.STATE_SIZE),
+                                            actions_pred.view(-1, self.set.N_AGENTS * self.set.ACTION_SIZE)).mean(dim=0)[curr_agent]
+            agent_optimizer = self.actors_optimizer[curr_agent]
+            agent_optimizer.zero_grad()
+            actor_loss.backward()
+            # Clip gradients
+            torch.nn.utils.clip_grad_norm_(self.actors_local[curr_agent].parameters(),
+                                           self.set.ACTOR_GRADIENT_CLIP_VALUE)
+            agent_optimizer.step()
+            # self.actor_lr_scheduler.step()
+
+            # ----------------------- update target networks ----------------------- #
+            self.soft_update(self.critic_local, self.critic_target, self.set.TAU)
+            self.soft_update(self.actors_local[curr_agent],
+                             self.actors_target[curr_agent], self.set.TAU)
 
     def soft_update(self, local_model, target_model, tau):
         """Soft update model parameters.
@@ -248,3 +252,4 @@ class MADDPG:
             torch.save(a.state_dict(), f'Actor{i + 1}_{name}.pth')
         # Critic
         torch.save(self.critic_local.state_dict(), f'Critic_{name}.pth')
+        torch.save(self._parameters, f'Hyperparameters_{name}.pth')
