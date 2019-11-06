@@ -6,6 +6,27 @@ from collections import namedtuple, deque
 from itertools import islice
 
 
+class GaussianNoise:
+    """Normal noise added"""
+
+    def __init__(self, size, seed, mu=0., theta=.15, sigma=.2):
+        """Initialize parameters and noise process."""
+        self.mu = mu
+        self.sigma = sigma
+        self.seed = random.seed(seed)
+        self.size = size
+
+    def reset(self):
+        """Reset the internal state (= noise) to mean (mu)."""
+        pass
+
+    def sample(self):
+        """Update internal state and return it as a noise sample."""
+        return np.random.normal(loc=self.mu,
+                                scale=self.sigma,
+                                size=self.size)
+
+
 class OUNoise:
     """Ornstein-Uhlenbeck process."""
 

@@ -34,7 +34,7 @@ class Actor(nn.Module):
 class Critic(nn.Module):
     """Critic (Value) Model."""
 
-    def __init__(self, state_size, action_size, seed,
+    def __init__(self, state_size, action_size, n_agents, seed,
                  fcs1_units=256, fc2_units=128, fcs3_units=64):
         """Initialize parameters and build model.
         Params
@@ -51,7 +51,7 @@ class Critic(nn.Module):
         self.bn1 = nn.BatchNorm1d(fcs1_units)
         self.fc2 = nn.Linear(fcs1_units + action_size, fc2_units)
         self.fc3 = nn.Linear(fc2_units, fcs3_units)
-        self.fc4 = nn.Linear(fcs3_units, 1)
+        self.fc4 = nn.Linear(fcs3_units, n_agents)
 
     def forward(self, state, action):
         """Build a critic (value) network that maps (state, action) pairs -> Q-values."""

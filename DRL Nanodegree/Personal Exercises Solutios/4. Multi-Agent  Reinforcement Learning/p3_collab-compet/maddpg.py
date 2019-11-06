@@ -7,14 +7,17 @@ import numpy as np
 from model import Actor, Critic
 from torch.optim import Adam
 import torch.nn.functional as F
-from utilities import ReplayBuffer, OUNoise
+from utilities import ReplayBuffer, OUNoise, GaussianNoise
 from types import SimpleNamespace
 
+# Hyperparameters
 PARAMETERS = {
-    'BUFFER_SIZE': int(1e5),          # Replay buffer size
+    'BUFFER_SIZE': int(1e6),          # Replay buffer size
     'BATCH_SIZE': 128,                # Minibatch size
     'GAMMA': 1.0,                     # Discount factor
     'TAU': 1e-3,                      # Soft update of target parameters
+    'UPDATE_EVERY': 10,               # Wait for more experiences before update
+
     'N_AGENTS': 2,                    # Total number of agents
     'STATE_SIZE': 24,                 # Size of the state for each agent
     'ACTION_SIZE': 2,                 # Size of actions for each agent
@@ -27,13 +30,13 @@ PARAMETERS = {
     'CRITIC_WEIGHT_DECAY': 0.0,       # Critic L2 weight decay
     'CRITIC_GRADIENT_CLIP_VALUE': 2,  # Max gradient modulus for clipping
 
-    'UPDATE_EVERY_N_STEPS': 5,        # Number of step wait before update
-    'UPDATE_N_TIMES': 10,             # Number of updates
 
-    # 'LR_STEP_SIZE': 30,             # LR step size
-    # 'LR_GAMMA': .2,                 # LR gamma multiplier
-    'OU_THETA': .15,                  # OU noise theta parameter
-    'OU_SIGMA': .1,                   # OU noise sigma parameters
+    'NOISE_TYPE': 'normal',           # Type of noise used: 'normal' or 'ou'
+    'N_SIGMA': 3,                     # Normal noise sigma parameters
+
+    'OU_THETA': .8,                   # OU noise theta parameter
+    'OU_SIGMA': .6,                   # OU noise sigma parameters
+
 
     'SEED': 42,                       # Random seed
     'DEVICE': torch.device("cuda" if torch.cuda.is_available() else "cpu"),
@@ -78,21 +81,28 @@ class MADDPG:
         # MADDPG Critic - Local and Target Networks - Centralized
         self.critic_local = Critic(self.set.STATE_SIZE * self.set.N_AGENTS,
                                    self.set.ACTION_SIZE * self.set.N_AGENTS,
+                                   self.set.N_AGENTS,
                                    self.set.SEED).to(self.set.DEVICE)
         self.critic_target = Critic(self.set.STATE_SIZE * self.set.N_AGENTS,
                                     self.set.ACTION_SIZE * self.set.N_AGENTS,
+                                    self.set.N_AGENTS,
                                     self.set.SEED).to(self.set.DEVICE)
         self.critic_optimizer = Adam(self.critic_local.parameters(),
                                      lr=self.set.CRITIC_LR,
                                      weight_decay=self.set.CRITIC_WEIGHT_DECAY)
 
         # Noise process
-        self.noise = OUNoise(self.set.ACTION_SIZE * self.set.N_AGENTS, self.set.SEED,
-                             theta=self.set.OU_THETA, sigma=self.set.OU_SIGMA)
-
+        if self.set.NOISE_TYPE == 'ou':
+            self.noise = OUNoise(self.set.ACTION_SIZE * self.set.N_AGENTS, self.set.SEED,
+                                 theta=self.set.OU_THETA, sigma=self.set.OU_SIGMA)
+        else:
+            self.noise = GaussianNoise(self.set.ACTION_SIZE * self.set.N_AGENTS, self.set.SEED,
+                                       sigma=self.set.N_SIGMA)
         # Replay buffer
         self.memory = ReplayBuffer(self.set.BUFFER_SIZE, self.set.BATCH_SIZE,
                                    self.set.SEED, self.set.DEVICE)
+        # Steps counter
+        self._step = 0
 
     def step(self, state, action, reward, next_state, done):
         """
@@ -114,11 +124,13 @@ class MADDPG:
         # Save experience / reward
         self.memory.add(state, action, reward, next_state, done)
         # self.update_every = self._step_count
-
+        self._step += 1
         # Learn, if enough samples are available in memory
-        if len(self.memory) > self.set.BATCH_SIZE:
+        if (len(self.memory) > self.set.BATCH_SIZE and
+           self._step >= self.set.UPDATE_EVERY):
             experiences = self.memory.sample()
             self.learn(experiences, self.set.GAMMA)
+            self._step = 0
 
     def act(self, states, add_noise=True):
         """
@@ -167,7 +179,7 @@ class MADDPG:
         """
         states, actions, rewards, next_states, dones = experiences
 
-        # ---------------------------- update critic ---------------------------- #
+        # ---------------------------- Update Critic ---------------------------- #
         # Get predicted next-state actions and Q values from target models for each agent
         actions_next = []
         for i in range(self.set.N_AGENTS):  # BS, AGENT, SIZE
@@ -177,9 +189,8 @@ class MADDPG:
         Q_targets_next = self.critic_target(next_states.view(-1, self.set.N_AGENTS * self.set.STATE_SIZE),
                                             actions_next.view(-1, self.set.N_AGENTS * self.set.ACTION_SIZE))
         # Compute Q targets for current states (y_i)
-        sum_rewards = rewards.sum(dim=1)
-        sum_dones = dones.sum(dim=1)
-        Q_targets = sum_rewards + (gamma * Q_targets_next * (1 - sum_dones))  # Sum rewards for each agent
+        Q_targets = (rewards.view(-1, self.set.N_AGENTS) +
+                     (gamma * Q_targets_next * (1 - dones.view(-1, self.set.N_AGENTS))))
         # Compute critic loss
         Q_expected = self.critic_local(states.view(-1, self.set.N_AGENTS * self.set.STATE_SIZE),
                                        actions.view(-1, self.set.N_AGENTS * self.set.ACTION_SIZE))
@@ -192,7 +203,7 @@ class MADDPG:
         self.critic_optimizer.step()
         # self.critic_lr_scheduler.step()
 
-        # ---------------------------- update actor ---------------------------- #
+        # ---------------------------- Update Actor ---------------------------- #
         # Compute actor loss
         actions_pred = []
         for i in range(self.set.N_AGENTS):  # BS, AGENT, SIZE
@@ -206,7 +217,7 @@ class MADDPG:
             agent_optimizer.zero_grad()
             actor_loss.backward(retain_graph=True)
             # Clip gradients
-            torch.nn.utils.clip_grad_norm_(self.actors_local[i].parameters(), self.set.ACTOR_GRADIENT_CLIP_VALUE)
+            # torch.nn.utils.clip_grad_norm_(self.actors_local[i].parameters(), self.set.ACTOR_GRADIENT_CLIP_VALUE)
             agent_optimizer.step()
         # self.actor_lr_scheduler.step()
 

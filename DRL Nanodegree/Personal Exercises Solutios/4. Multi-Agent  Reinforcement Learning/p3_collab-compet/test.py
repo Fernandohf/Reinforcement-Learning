@@ -30,41 +30,41 @@ print('The state for the first agent looks like:', states[0])
 
 # Hyperparameters
 PARAMETERS = {
-    'BUFFER_SIZE': int(1e5),            # Replay buffer size
-    'BATCH_SIZE': 128,                  # Minibatch size
-    'GAMMA': 1.0,                       # Discount factor
-    'TAU': 1e-3,                        # Soft update of target parameters
-    'N_AGENTS': 2,                      # Total number of agents
-    'STATE_SIZE': 24,                   # Size of the state for each agent
-    'ACTION_SIZE': 2,                   # Size of actions for each agent
+    'BUFFER_SIZE': int(1e6),          # Replay buffer size
+    'BATCH_SIZE': 256,                # Minibatch size
+    'GAMMA': 1.0,                     # Discount factor
+    'TAU': 2e-3,                      # Soft update of target parameters
+    'UPDATE_EVERY': 1,                # Wait for more experiences before update
 
-    'ACTOR_LR': 1e-3,                   # Learning rate of the actor
-    'ACTOR_WEIGHT_DECAY': 0.0,          # Actor L2 weight decay
-    'ACTOR_GRADIENT_CLIP_VALUE': 10,    # Max gradient modulus for clipping
+    'N_AGENTS': 2,                    # Total number of agents
+    'STATE_SIZE': 24,                 # Size of the state for each agent
+    'ACTION_SIZE': 2,                 # Size of actions for each agent
 
-    'CRITIC_LR': 1e-3,                  # Learning rate of the critic
-    'CRITIC_WEIGHT_DECAY': 0.0,         # Critic L2 weight decay
-    'CRITIC_GRADIENT_CLIP_VALUE': 1,    # Max gradient modulus for clipping
+    'ACTOR_LR': 2e-3,                 # Learning rate of the actor
+    'ACTOR_WEIGHT_DECAY': 0.00001,    # Actor L2 weight decay
+    'ACTOR_GRADIENT_CLIP_VALUE': 10,  # Max gradient modulus for clipping
 
-    # 'LR_STEP_SIZE': 30,               # LR step size
-    # 'LR_GAMMA': .2,                   # LR gamma multiplier
-    'OU_THETA': .1,                     # OU noise theta parameter
-    'OU_SIGMA': .15,                    # OU noise sigma parameters
+    'CRITIC_LR': 2e-3,                # Learning rate of the critic
+    'CRITIC_WEIGHT_DECAY': 0.0001,    # Critic L2 weight decay
+    'CRITIC_GRADIENT_CLIP_VALUE': 2,  # Max gradient modulus for clipping
+
+    'NOISE_TYPE': 'normal',           # Type of noise used: 'normal' or 'ou'
+    'N_SIGMA': .35,                   # Normal noise sigma parameters
+
+    'OU_THETA': .8,                   # OU noise theta parameter
+    'OU_SIGMA': .6,                   # OU noise sigma parameters
 
     'SEED': 42,                       # Random seed
     'DEVICE': torch.device("cuda" if torch.cuda.is_available() else "cpu"),
 }
 
-# Load and define agent
-
-
 agent = MADDPG(PARAMETERS)
 
 # Hyperparameters
-N_EPISODES = 2000
-MAX_T = 5000
+N_EPISODES = 5000
+MAX_T = 1000
 SUCCESS_SCORE = .5
 
 
 scores = train_MADDPG(env, agent, n_episodes=N_EPISODES, max_t=MAX_T, success_score=SUCCESS_SCORE,
-                      print_every=50)
+                      print_every=500)
