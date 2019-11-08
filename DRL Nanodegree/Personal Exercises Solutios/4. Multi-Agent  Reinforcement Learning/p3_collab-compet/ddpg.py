@@ -1,72 +1,88 @@
 import numpy as np
 import random
-import copy
-from collections import namedtuple, deque
-from model import Actor, Critic
+from types import SimpleNamespace
 import torch
 import torch.nn.functional as F
-import torch.optim as optim
-# from torch.optim.lr_scheduler import StepLR
+from torch.optim import Adam
 
+from model import Actor, Critic
+from utilities import OUNoise, ReplayBuffer
 
-BUFFER_SIZE = int(1e5)      # Replay buffer size
-BATCH_SIZE = 128            # Minibatch size
-GAMMA = 1.0                 # Discount factor
-TAU = 1e-3                  # Soft update of target parameters
-LR_ACTOR = 1e-3             # Learning rate of the actor
-LR_CRITIC = 1e-3            # Learning rate of the critic
-WEIGHT_DECAY = .000         # L2 weight decay
-UPDATE_EVERY_N_STEPS = 5    # Number of step wait before update
-UPDATE_N_TIMES = 10         # Number of updates
-GRADIENT_CLIP_VALUE = 2     # Max gradient modulus for clipping
-# LR_STEP_SIZE = 30         # LR step size
-# LR_GAMMA = .2             # LR gamma multiplier
-OU_THETA = .15              # OU noise parameters
-OU_SIGMA = .1               # OU noise parameters
+# Hyperparameters
+PARAMETERS = {
+    'BUFFER_SIZE': int(1e6),          # Replay buffer size
+    'BATCH_SIZE': 128,                # Minibatch size
+    'GAMMA': 1.0,                     # Discount factor
+    'TAU': 1e-3,                      # Soft update of target parameters
+    'UPDATE_EVERY': 10,               # Wait for more experiences before update
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    'N_AGENTS': 2,                    # Total number of agents
+    'STATE_SIZE': 24,                 # Size of the state for each agent
+    'ACTION_SIZE': 2,                 # Size of actions for each agent
+
+    'ACTOR_LR': 1e-3,                 # Learning rate of the actor
+    'ACTOR_WEIGHT_DECAY': 0.0,        # Actor L2 weight decay
+    'ACTOR_GRADIENT_CLIP_VALUE': 10,  # Max gradient modulus for clipping
+
+    'CRITIC_LR': 1e-3,                # Learning rate of the critic
+    'CRITIC_WEIGHT_DECAY': 0.0,       # Critic L2 weight decay
+    'CRITIC_GRADIENT_CLIP_VALUE': 2,  # Max gradient modulus for clipping
+
+    'NOISE_TYPE': 'normal',           # Type of noise used: 'normal' or 'ou'
+    'N_SIGMA': 3,                     # Normal noise sigma parameters
+
+    'OU_THETA': .2,                   # OU noise theta parameter
+    'OU_SIGMA': .01,                  # OU noise sigma parameters
+
+    'SEED': 42,                       # Random seed
+    'DEVICE': torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+}
 
 
 class DDPGAgent():
     """Interacts with and learns from the environment."""
 
-    def __init__(self, state_size, action_size, random_seed):
+    def __init__(self, parameters=None):
         """Initialize an Agent object.
 
         Params
         ======
-            state_size (int): dimension of each state
-            action_size (int): dimension of each action
-            random_seed (int): random seed
+            parameters: dict
+                All parameters to create the agent
         """
-        self.state_size = state_size
-        self.action_size = action_size
-        self.seed = random.seed(random_seed)
+        # Parameters
+        if parameters is None:
+            self.set = SimpleNamespace(**PARAMETERS)
+            self._parameters = PARAMETERS
+        else:
+            self.set = SimpleNamespace(**parameters)
+            self._parameters = parameters
+
+        # Hyper parameters
+        self.seed = random.seed(self.set.SEED)
 
         # Actor Network (w/ Target Network)
-        self.actor_local = Actor(state_size, action_size, random_seed).to(device)
-        self.actor_target = Actor(state_size, action_size, random_seed).to(device)
-        self.actor_optimizer = optim.Adam(self.actor_local.parameters(),
-                                          lr=LR_ACTOR)
-        # self.actor_lr_scheduler = StepLR(self.actor_optimizer,
-        #                                  step_size=LR_STEP_SIZE,
-        #                                  gamma=LR_GAMMA)
+        self.actor_local = Actor(self.set.STATE_SIZE, self.set.ACTION_SIZE, self.set.SEED).to(self.set.DEVICE)
+        self.actor_target = Actor(self.set.STATE_SIZE, self.set.ACTION_SIZE, self.set.SEED).to(self.set.DEVICE)
+        self.actor_optimizer = Adam(self.actor_local.parameters(),
+                                    lr=self.set.ACTOR_LR,
+                                    weight_decay=self.set.ACTOR_WEIGHT_DECAY)
 
         # Critic Network (w/ Target Network)
-        self.critic_local = Critic(state_size, action_size, random_seed).to(device)
-        self.critic_target = Critic(state_size, action_size, random_seed).to(device)
-        self.critic_optimizer = optim.Adam(self.critic_local.parameters(),
-                                           lr=LR_CRITIC,
-                                           weight_decay=WEIGHT_DECAY)
-        # self.critic_lr_scheduler = StepLR(self.critic_optimizer,
-        #                                   step_size=LR_STEP_SIZE,
-        #                                   gamma=LR_GAMMA)
+        self.critic_local = Critic(self.set.STATE_SIZE, self.set.ACTION_SIZE,
+                                   self.set.N_AGENTS, self.set.SEED).to(self.set.DEVICE)
+        self.critic_target = Critic(self.set.STATE_SIZE, self.set.ACTION_SIZE,
+                                    self.set.N_AGENTS, self.set.SEED).to(self.set.DEVICE)
+        self.critic_optimizer = Adam(self.critic_local.parameters(),
+                                     lr=self.set.CRITIC_LR,
+                                     weight_decay=self.set.CRITIC_WEIGHT_DECAY)
 
         # Noise process
-        self.noise = OUNoise(action_size, random_seed)
+        self.noise = OUNoise(self.set.ACTION_SIZE, self.set.SEED)
 
         # Replay memory
-        self.memory = ReplayBuffer(action_size, BUFFER_SIZE, BATCH_SIZE, random_seed)
+        self.memory = ReplayBuffer(self.set.ACTION_SIZE, self.set.BUFFER_SIZE, self.set.BATCH_SIZE, self.set.SEED)
+
         self._step_count = 0
 
     def step(self, state, action, reward, next_state, done):
@@ -74,19 +90,16 @@ class DDPGAgent():
         # Save experience / reward
         self.memory.add(state, action, reward, next_state, done)
         self._step_count += 1
-        # self.update_every = self._step_count
 
         # Learn, if enough samples are available in memory
-        if len(self.memory) > BATCH_SIZE and self._step_count >= UPDATE_EVERY_N_STEPS:
+        if len(self.memory) > self.set.BATCH_SIZE and self._step_count > self.set.UPDATE_EVERY:
             self._step_count = 0
-            # Multiple updates
-            for i in range(UPDATE_N_TIMES):
-                experiences = self.memory.sample()
-                self.learn(experiences, GAMMA)
+            experiences = self.memory.sample()
+            self.learn(experiences, self.set.GAMMA)
 
     def act(self, state, add_noise=True):
         """Returns actions for given state as per current policy."""
-        state = torch.from_numpy(state).float().to(device)
+        state = torch.from_numpy(state).float().to(self.set.DEVICE)
         self.actor_local.eval()
         with torch.no_grad():
             action = self.actor_local(state).cpu().data.numpy()
@@ -124,10 +137,7 @@ class DDPGAgent():
         # Minimize the loss
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
-        # Clip gradients
-        torch.nn.utils.clip_grad_norm_(self.critic_local.parameters(), GRADIENT_CLIP_VALUE)
         self.critic_optimizer.step()
-        # self.critic_lr_scheduler.step()
 
         # ---------------------------- update actor ---------------------------- #
         # Compute actor loss
@@ -136,17 +146,15 @@ class DDPGAgent():
         # Minimize the loss
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
-        # torch.nn.utils.clip_grad_norm_(self.actor_local.parameters(), GRADIENT_CLIP_VALUE)
         self.actor_optimizer.step()
-        # self.actor_lr_scheduler.step()
 
         # ----------------------- update target networks ----------------------- #
-        self.soft_update(self.critic_local, self.critic_target, TAU)
-        self.soft_update(self.actor_local, self.actor_target, TAU)
+        self.soft_update(self.critic_local, self.critic_target, self.setTAU)
+        self.soft_update(self.actor_local, self.actor_target, self.set.TAU)
 
     def soft_update(self, local_model, target_model, tau):
         """Soft update model parameters.
-        θ_target = τ * θ_local + (1 - τ) * θ_target
+        θ_target = τ*θ_local + (1 - τ)*θ_target
 
         Params
         ======
@@ -155,46 +163,4 @@ class DDPGAgent():
             tau (float): interpolation parameter
         """
         for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
-            target_param.data.copy_(tau * local_param.data + (1.0 - tau) * target_param.data)
-
-
-class ReplayBuffer:
-    """Fixed-size buffer to store experience tuples."""
-
-    def __init__(self, action_size, buffer_size, batch_size, seed):
-        """Initialize a ReplayBuffer object.
-        Params
-        ======
-            buffer_size (int): maximum size of buffer
-            batch_size (int): size of each training batch
-        """
-        self.action_size = action_size
-        self.memory = deque(maxlen=buffer_size)  # internal memory (deque)
-        self.batch_size = batch_size
-        self.experience = namedtuple("Experience", field_names=["state", "action", "reward", "next_state", "done"])
-        self.seed = random.seed(seed)
-
-    def add(self, state, action, reward, next_state, done):
-        """Add a new experience to memory."""
-        # e = self.experience(state, action, reward, next_state, done)
-        # self.memory.append(e)
-        # In case of multiple agents
-        for i in range(state.shape[0]):
-            e = self.experience(state[i], action[i], reward[i], next_state[i], done[i])
-            self.memory.append(e)
-
-    def sample(self):
-        """Randomly sample a batch of experiences from memory."""
-        experiences = random.sample(self.memory, k=self.batch_size)
-
-        states = torch.from_numpy(np.vstack([e.state for e in experiences if e is not None])).float().to(device)
-        actions = torch.from_numpy(np.vstack([e.action for e in experiences if e is not None])).float().to(device)
-        rewards = torch.from_numpy(np.vstack([e.reward for e in experiences if e is not None])).float().to(device)
-        next_states = torch.from_numpy(np.vstack([e.next_state for e in experiences if e is not None])).float().to(device)
-        dones = torch.from_numpy(np.vstack([e.done for e in experiences if e is not None]).astype(np.uint8)).float().to(device)
-        # import pdb; pdb.set_trace()
-        return (states, actions, rewards, next_states, dones)
-
-    def __len__(self):
-        """Return the current size of internal memory."""
-        return len(self.memory)
+            target_param.data.copy_(tau*local_param.data + (1.0-tau)*target_param.data)
