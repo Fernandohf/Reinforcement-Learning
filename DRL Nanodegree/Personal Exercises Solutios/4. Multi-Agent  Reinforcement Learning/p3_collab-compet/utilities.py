@@ -9,22 +9,23 @@ from itertools import islice
 class GaussianNoise:
     """Normal noise added"""
 
-    def __init__(self, size, seed, mu=0., theta=.15, sigma=.2):
+    def __init__(self, size, seed, mu=0., sigma=.2,
+                 eps_beta=.01, eps_init=1, eps_min=.001):
         """Initialize parameters and noise process."""
         self.mu = mu
         self.sigma = sigma
         self.seed = random.seed(seed)
         self.size = size
-        # Epsilon
-        self._eps_init = 1
+        self._eps_init = eps_init
         self._eps = self._eps_init
-        self._eps_min = .001
-        self._eps_beta = .01
-        self._eps_step = 0
+        self._eps_min = eps_min
+        self._eps_beta = eps_beta
 
     def reset(self):
-        """Reset the internal state (= noise) to mean (mu)."""
-        pass
+        """Reset the internal epsilon decay status."""
+        # Epsilon
+        self._eps = self._eps_init
+        self._eps_step = 0
 
     def sample(self):
         """Update internal state and return it as a noise sample."""
@@ -101,57 +102,6 @@ class ReplayBuffer:
         return len(self.memory)
 
 
-class PrioritizedReplay:
-    """Fixed-size buffer to store prioritized experience tuples."""
-
-    def __init__(self, buffer_size, batch_size, seed, alpha, device):
-        """Initialize a ReplayBuffer object."""
-
-        self.memory = deque(maxlen=buffer_size)
-        self.priorities = deque(maxlen=buffer_size)
-        self.batch_size = batch_size
-        self.experience = namedtuple("Experience", field_names=["state", "action", "reward", "next_state", "done"])
-        self.seed = random.seed(seed)
-        self.alpha = alpha
-        self.epsilon = 1e-5
-
-    def add(self, state, action, reward, next_state, done, priority):
-        """Add a new experience to memory."""
-        e = self.experience(state, action, reward, next_state, done)
-        self.memory.append(e)
-        self.priorities.append(priority)
-
-    def sample(self, beta):
-        """Randomly sample a batch of experiences from memory."""
-        priorities = np.array(self.priorities).reshape(-1)
-        priorities = np.power(priorities + self.epsilon, self.alpha)  # add a small value epsilon to ensure numeric stability
-        p = priorities/np.sum(priorities)  # compute a probability density over the priorities
-        sampled_indices = np.random.choice(np.arange(len(p)), size=self.batch_size, p=p)  # choose random indices given p
-        experiences = [self.memory[i] for i in sampled_indices]     # subset the experiences
-        p = np.array([p[i] for i in sampled_indices]).reshape(-1)
-
-        states = torch.from_numpy(np.vstack([e.state for e in experiences if e is not None])).float().to(device)
-        actions = torch.from_numpy(np.vstack([e.action for e in experiences if e is not None])).float().to(device)
-        rewards = torch.from_numpy(np.vstack([e.reward for e in experiences if e is not None])).float().to(device)
-        next_states = torch.from_numpy(np.vstack([e.next_state for e in experiences if e is not None])).float().to(device)
-        dones = torch.from_numpy(np.vstack([e.done for e in experiences if e is not None]).astype(np.uint8)).float().to(device)
-
-        weights = np.power(len(experiences) * p, -beta)
-        weights /= weights.max()
-        weights = torch.from_numpy(weights).float().to(device)
-
-        return (states, actions, rewards, next_states, dones, weights, sampled_indices)
-
-    def update(self, indices, priorities):
-        """Update the priority values after training given the samples drawn."""
-        for i, priority in zip(indices, priorities):
-            self.priorities[i] = priority
-
-    def ready(self):
-        """Return the current size of internal memory."""
-        return len(self.memory) >= self.batch_size
-
-
 def train_MADDPG(env, agent, n_episodes=2000, max_t=500, success_score=30, deque_len=100, print_every=10,
                  brain_name='TennisBrain'):
     """Deep Deterministic Policy Gradients
@@ -193,13 +143,13 @@ def train_MADDPG(env, agent, n_episodes=2000, max_t=500, success_score=30, deque
         mean_deque_score = np.mean(scores_deque)
         print('\rEpisode {:3d}/{}\tAverage Score (last {:3d}): {:.4f}\t Last score: {:.4f}'.format(i_episode,
                                                                                                    n_episodes,
-                                                                                                   min(i_episode, 100),
+                                                                                                   min(i_episode, deque_len),
                                                                                                    mean_deque_score,
                                                                                                    max_score), end="")
         if i_episode % print_every == 0:
-            reversed_deque = copy(scores_deque)
-            reversed_deque.reverse()
-            mean_last_n = np.mean(list(islice(reversed_deque, 0, print_every)))
+            reversed_scores = copy(scores)
+            reversed_scores.reverse()
+            mean_last_n = np.mean(list(islice(reversed_scores, 0, print_every)))
             agent.save_models("checkpoint")
             print('\rEpisode {:3d}/{}\tAverage Score (last {:3d}): {:.4f}\t Last score: {:.4f}'.format(i_episode,
                                                                                                        n_episodes,
@@ -210,7 +160,7 @@ def train_MADDPG(env, agent, n_episodes=2000, max_t=500, success_score=30, deque
             agent.save_models("solved")
             print('\rSolved on Episode {:3d}/{}\tAverage Score (last {:3d}): {:.4f}'.format(i_episode,
                                                                                             n_episodes,
-                                                                                            min(i_episode, 100),
+                                                                                            min(i_episode, deque_len),
                                                                                             mean_deque_score))
             solved = True
 

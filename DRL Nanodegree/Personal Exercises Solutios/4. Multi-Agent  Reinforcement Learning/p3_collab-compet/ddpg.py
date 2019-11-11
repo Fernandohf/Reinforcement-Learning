@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch.optim import Adam
 
 from model import Actor, Critic
-from utilities import OUNoise, ReplayBuffer
+from utilities import OUNoise, GaussianNoise, ReplayBuffer
 
 # Hyperparameters
 PARAMETERS = {
@@ -78,7 +78,12 @@ class DDPGAgent():
                                      weight_decay=self.set.CRITIC_WEIGHT_DECAY)
 
         # Noise process
-        self.noise = OUNoise(self.set.ACTION_SIZE, self.set.SEED)
+        if self.set.NOISE_TYPE == 'ou':
+            self.noise = OUNoise(self.set.ACTION_SIZE * self.set.N_AGENTS, self.set.SEED,
+                                 theta=self.set.OU_THETA, sigma=self.set.OU_SIGMA)
+        else:
+            self.noise = GaussianNoise(self.set.ACTION_SIZE * self.set.N_AGENTS, self.set.SEED,
+                                       sigma=self.set.N_SIGMA)
 
         # Replay memory
         self.memory = ReplayBuffer(self.set.ACTION_SIZE, self.set.BUFFER_SIZE, self.set.BATCH_SIZE, self.set.SEED)
@@ -104,6 +109,8 @@ class DDPGAgent():
         with torch.no_grad():
             action = self.actor_local(state).cpu().data.numpy()
         self.actor_local.train()
+
+        # Add noise
         if add_noise:
             action += self.noise.sample()
         return np.clip(action, -1, 1)
@@ -154,7 +161,7 @@ class DDPGAgent():
 
     def soft_update(self, local_model, target_model, tau):
         """Soft update model parameters.
-        θ_target = τ*θ_local + (1 - τ)*θ_target
+        θ_target = τ * θ_local + (1 - τ) * θ_target
 
         Params
         ======
@@ -163,4 +170,4 @@ class DDPGAgent():
             tau (float): interpolation parameter
         """
         for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
-            target_param.data.copy_(tau*local_param.data + (1.0-tau)*target_param.data)
+            target_param.data.copy_(tau * local_param.data + (1.0 - tau) * target_param.data)

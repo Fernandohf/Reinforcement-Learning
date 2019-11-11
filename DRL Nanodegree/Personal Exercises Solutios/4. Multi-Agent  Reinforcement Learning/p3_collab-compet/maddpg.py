@@ -12,8 +12,8 @@ from types import SimpleNamespace
 
 # Hyperparameters
 PARAMETERS = {
-    'BUFFER_SIZE': int(1e5),          # Replay buffer size
-    'BATCH_SIZE': 256,                # Minibatch size
+    'BUFFER_SIZE': int(1e6),          # Replay buffer size
+    'BATCH_SIZE': 128,                # Minibatch size
     'GAMMA': 1.0,                     # Discount factor
     'TAU': 5e-3,                      # Soft update of target parameters
     'UPDATE_EVERY': 1,               # Wait for more experiences before update
@@ -34,8 +34,8 @@ PARAMETERS = {
     'NOISE_TYPE': 'normal',           # Type of noise used: 'normal' or 'ou'
     'N_SIGMA': 3,                     # Normal noise sigma parameters
 
-    'OU_THETA': .001,                   # OU noise theta parameter
-    'OU_SIGMA': 5,                  # OU noise sigma parameters
+    'OU_THETA': .01,                   # OU noise theta parameter
+    'OU_SIGMA': .01,                  # OU noise sigma parameters
 
 
     'SEED': 42,                       # Random seed
@@ -44,7 +44,7 @@ PARAMETERS = {
 DEFAULT_SETTINGS = SimpleNamespace(**PARAMETERS)
 
 
-class MADDPG(DDPGAgent):
+class MADDPG():
     """
     Implements a Multi Agent Deep Deterministic Policy Gradient.
     It uses a centralized training approach to train the critic and decentralized for the actors.
@@ -82,6 +82,9 @@ class MADDPG(DDPGAgent):
                                    self.set.SEED, self.set.DEVICE)
         # Steps counter
         self._step = 0
+
+    def reset(self):
+        self.noise.reset()
 
     def step(self, state, action, reward, next_state, done):
         """
@@ -123,7 +126,7 @@ class MADDPG(DDPGAgent):
         # Actions for each agent
         actions = []
         for i, agent in enumerate(self.agents):
-            state = torch.from_numpy(states[i][np.newaxis]).float().to(self.set.DEVICE)
+            state = torch.from_numpy(states[i, np.newaxis]).float().to(self.set.DEVICE)
             agent.actor_local.eval()
             with torch.no_grad():
                 actions.append(agent.actor_local(state).cpu().data.numpy())
@@ -134,8 +137,7 @@ class MADDPG(DDPGAgent):
         if add_noise:
             actions += self.noise.sample().reshape(actions.shape)
 
-        # Clip actions values
-        return np.clip(actions, -1, 1)
+        return actions
 
     def learn(self, experiences, gamma):
         """Update policy and value parameters using given batch of experience tuples.
@@ -152,13 +154,10 @@ class MADDPG(DDPGAgent):
         """
         states, actions, rewards, next_states, dones = experiences
 
-        # ---------------------------- Update Critic ---------------------------- #
-        # Get predicted next-state actions and Q values from target models for each agent
-        actions_next = []
         # For each agent
         for agent_n, agent in enumerate(self.agents):  # BS, AGENT, SIZE
-            actions_next = [agent.actor_target(next_states[:, a, :]) if a == agent_n else
-                            agent.actor_target(next_states[:, a, :]).detach()         # Detach other agent
+            actions_next = [self.agents[a].actor_target(next_states[:, a, :]) if a == agent_n else
+                            self.agents[a].actor_target(next_states[:, a, :]).detach()         # Detach other agent
                             for a in range(self.set.N_AGENTS)]
             actions_next = torch.stack(actions_next)
 
@@ -196,21 +195,8 @@ class MADDPG(DDPGAgent):
             # self.actor_lr_scheduler.step()
 
             # ----------------------- update target networks ----------------------- #
-            self.soft_update(agent.critic_local, agent.critic_target, self.set.TAU)
-            self.soft_update(agent.actor_local, agent.actor_target, self.set.TAU)
-
-    def soft_update(self, local_model, target_model, tau):
-        """Soft update model parameters.
-        θ_target = τ * θ_local + (1 - τ) * θ_target
-
-        Params
-        ======
-            local_model: PyTorch model (weights will be copied from)
-            target_model: PyTorch model (weights will be copied to)
-            tau (float): interpolation parameter
-        """
-        for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
-            target_param.data.copy_(tau * local_param.data + (1.0 - tau) * target_param.data)
+            agent.soft_update(agent.critic_local, agent.critic_target, self.set.TAU)
+            agent.soft_update(agent.actor_local, agent.actor_target, self.set.TAU)
 
     def save_models(self, name):
         """
