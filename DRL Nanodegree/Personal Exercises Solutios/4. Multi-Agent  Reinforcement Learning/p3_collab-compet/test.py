@@ -15,8 +15,8 @@ env_info = env.reset(train_mode=True)[brain_name]
 
 # Hyperparameters
 PARAMETERS = {
-    'BUFFER_SIZE': int(1e6),           # Replay buffer size
-    'BATCH_SIZE': 128,                 # Minibatch size
+    'BUFFER_SIZE': int(1e4),           # Replay buffer size
+    'BATCH_SIZE': 256,                 # Minibatch size
     'GAMMA': 1.,                      # Discount factor
     'TAU': 2e-3,                       # Soft update of target parameters
     'UPDATE_EVERY': 1,                 # Wait for more experiences before update
@@ -25,16 +25,20 @@ PARAMETERS = {
     'STATE_SIZE': 24,                  # Size of the state for each agent
     'ACTION_SIZE': 2,                  # Size of actions for each agent
 
-    'ACTOR_LR': 1e-3,                  # Learning rate of the actor
+    'ACTOR_LR': 1e-2,                  # Learning rate of the actor
     'ACTOR_WEIGHT_DECAY': 0.000,       # Actor L2 weight decay
-    'ACTOR_GRADIENT_CLIP_VALUE': 10,    # Max gradient modulus for clipping
+    'ACTOR_GRADIENT_CLIP_VALUE': 2,    # Max gradient modulus for clipping
 
-    'CRITIC_LR': 2e-3,                 # Learning rate of the critic
-    'CRITIC_WEIGHT_DECAY': 0.0001,     # Critic L2 weight decay
+    'CRITIC_LR': 1e-2,                 # Learning rate of the critic
+    'CRITIC_WEIGHT_DECAY': 0.000,      # Critic L2 weight decay
     'CRITIC_GRADIENT_CLIP_VALUE': 1,   # Max gradient modulus for clipping
 
-    'NOISE_TYPE': 'normal',                # Type of noise used: 'normal' or 'ou'
-    'N_SIGMA': .4,                     # Normal noise sigma parameters
+    'NOISE_TYPE': 'normal',            # Type of noise used: 'normal' or 'ou'
+    'N_SIGMA': .3,                     # Normal noise sigma parameters
+    'N_MEAN': 0.,
+    'N_EPS_BETA': .01,
+    'N_EPS_INIT': 1,
+    'N_EPS_MIN': .001,
 
     'OU_THETA': 1e-3,                  # OU noise theta parameter
     'OU_SIGMA': 1e-3,                  # OU noise sigma parameters

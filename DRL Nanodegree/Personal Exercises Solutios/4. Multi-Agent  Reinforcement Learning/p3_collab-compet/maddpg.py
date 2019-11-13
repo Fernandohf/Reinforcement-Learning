@@ -76,7 +76,8 @@ class MADDPG():
                                  theta=self.set.OU_THETA, sigma=self.set.OU_SIGMA)
         else:
             self.noise = GaussianNoise(self.set.ACTION_SIZE * self.set.N_AGENTS, self.set.SEED,
-                                       sigma=self.set.N_SIGMA)
+                                       self.set.N_MEAN, self.set.N_SIGMA, self.set.N_EPS_BETA,
+                                       self.set.N_EPS_INIT, eps_min=self.set.N_EPS_MIN)
         # Replay buffer
         self.memory = ReplayBuffer(self.set.BUFFER_SIZE, self.set.BATCH_SIZE,
                                    self.set.SEED, self.set.DEVICE)
