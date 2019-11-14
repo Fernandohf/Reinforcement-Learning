@@ -2,3 +2,4 @@ settings.json
 /.ipynb_checkpoints/
 *-checkpoint.ipynb
 *.pyc
+/wandb/
