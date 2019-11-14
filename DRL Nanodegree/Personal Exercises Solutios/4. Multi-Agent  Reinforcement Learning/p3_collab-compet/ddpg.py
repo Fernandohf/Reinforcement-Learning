@@ -8,55 +8,22 @@ from torch.optim import Adam
 from model import Actor, Critic
 from utilities import OUNoise, GaussianNoise, ReplayBuffer
 
-# Hyperparameters
-PARAMETERS = {
-    'BUFFER_SIZE': int(1e6),          # Replay buffer size
-    'BATCH_SIZE': 128,                # Minibatch size
-    'GAMMA': 1.0,                     # Discount factor
-    'TAU': 1e-3,                      # Soft update of target parameters
-    'UPDATE_EVERY': 10,               # Wait for more experiences before update
-
-    'N_AGENTS': 2,                    # Total number of agents
-    'STATE_SIZE': 24,                 # Size of the state for each agent
-    'ACTION_SIZE': 2,                 # Size of actions for each agent
-
-    'ACTOR_LR': 1e-3,                 # Learning rate of the actor
-    'ACTOR_WEIGHT_DECAY': 0.0,        # Actor L2 weight decay
-    'ACTOR_GRADIENT_CLIP_VALUE': 10,  # Max gradient modulus for clipping
-
-    'CRITIC_LR': 1e-3,                # Learning rate of the critic
-    'CRITIC_WEIGHT_DECAY': 0.0,       # Critic L2 weight decay
-    'CRITIC_GRADIENT_CLIP_VALUE': 2,  # Max gradient modulus for clipping
-
-    'NOISE_TYPE': 'normal',           # Type of noise used: 'normal' or 'ou'
-    'N_SIGMA': 3,                     # Normal noise sigma parameters
-
-    'OU_THETA': .2,                   # OU noise theta parameter
-    'OU_SIGMA': .01,                  # OU noise sigma parameters
-
-    'SEED': 42,                       # Random seed
-    'DEVICE': torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-}
-
 
 class DDPGAgent():
     """Interacts with and learns from the environment."""
 
-    def __init__(self, parameters=None):
-        """Initialize an Agent object.
+    def __init__(self, parameters):
+        """
+        Initialize an Deep Deterministic Policy Gradient Agent.
 
-        Params
-        ======
-            parameters: dict
-                All parameters to create the agent
+        Parameters
+        ----------
+        parameters: dict
+            All parameters to create the agent.
         """
         # Parameters
-        if parameters is None:
-            self.set = SimpleNamespace(**PARAMETERS)
-            self._parameters = PARAMETERS
-        else:
-            self.set = SimpleNamespace(**parameters)
-            self._parameters = parameters
+        self.set = SimpleNamespace(**parameters)
+        self._parameters = parameters
 
         # Hyper parameters
         self.seed = random.seed(self.set.SEED)

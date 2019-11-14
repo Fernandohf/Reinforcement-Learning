@@ -1,47 +1,14 @@
 # main code that contains the neural network setup
 # policy + critic updates
 # see ddpg.py for other details in the network
-
+import os
 import torch
 import numpy as np
 import torch.nn.functional as F
 from utilities import ReplayBuffer, OUNoise, GaussianNoise
 from ddpg import DDPGAgent
 from types import SimpleNamespace
-
-
-# Hyperparameters
-PARAMETERS = {
-    'BUFFER_SIZE': int(1e6),          # Replay buffer size
-    'BATCH_SIZE': 128,                # Minibatch size
-    'GAMMA': 1.0,                     # Discount factor
-    'TAU': 5e-3,                      # Soft update of target parameters
-    'UPDATE_EVERY': 1,               # Wait for more experiences before update
-
-    'N_AGENTS': 2,                    # Total number of agents
-    'STATE_SIZE': 24,                 # Size of the state for each agent
-    'ACTION_SIZE': 2,                 # Size of actions for each agent
-
-    'ACTOR_LR': 1e-3,                 # Learning rate of the actor
-    'ACTOR_WEIGHT_DECAY': 0.0,        # Actor L2 weight decay
-    'ACTOR_GRADIENT_CLIP_VALUE': 10,  # Max gradient modulus for clipping
-
-    'CRITIC_LR': 1e-3,                # Learning rate of the critic
-    'CRITIC_WEIGHT_DECAY': 0.0,       # Critic L2 weight decay
-    'CRITIC_GRADIENT_CLIP_VALUE': 2,  # Max gradient modulus for clipping
-
-
-    'NOISE_TYPE': 'normal',           # Type of noise used: 'normal' or 'ou'
-    'N_SIGMA': 3,                     # Normal noise sigma parameters
-
-    'OU_THETA': .01,                   # OU noise theta parameter
-    'OU_SIGMA': .01,                  # OU noise sigma parameters
-
-
-    'SEED': 42,                       # Random seed
-    'DEVICE': torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-}
-DEFAULT_SETTINGS = SimpleNamespace(**PARAMETERS)
+import wandb
 
 
 class MADDPG():
@@ -51,25 +18,24 @@ class MADDPG():
 
     Parametes
     ----------
-    settings: Settings object
+    parameters: dict
         An object with all the hyperparameters for the model.
-        If not prodived the default settings will be used (see above).
 
     """
-    def __init__(self, parameters=None):
+    def __init__(self, parameters):
         super(MADDPG, self).__init__()
 
         # Parameters
-        if parameters is None:
-            self.set = DEFAULT_SETTINGS
-            self._parameters = PARAMETERS
-        else:
-            self.set = SimpleNamespace(**parameters)
-            self._parameters = parameters
+        self.set = SimpleNamespace(**parameters)
+        self._parameters = parameters
 
         # Create agents
         self.agents = [DDPGAgent(self._parameters) for i in range(self.set.N_AGENTS)]
-
+        # WandB
+        if self.set.WANDB:
+            for agent in self.agents:
+                wandb.watch(agent.actor_local)
+                wandb.watch(agent.critic_local)
         # Noise process
         if self.set.NOISE_TYPE == 'ou':
             self.noise = OUNoise(self.set.ACTION_SIZE * self.set.N_AGENTS, self.set.SEED,
@@ -157,10 +123,11 @@ class MADDPG():
 
         # For each agent
         for agent_n, agent in enumerate(self.agents):  # BS, AGENT, SIZE
-            actions_next = [self.agents[a].actor_target(next_states[:, a, :]) if a == agent_n else
-                            self.agents[a].actor_target(next_states[:, a, :]).detach()         # Detach other agent
+
+            # Next actions for each agent
+            actions_next = [self.agents[a].actor_target(next_states[:, a, :])
                             for a in range(self.set.N_AGENTS)]
-            actions_next = torch.stack(actions_next)
+            actions_next = torch.stack(actions_next, dim=1)
 
             Q_targets_next = agent.critic_target(next_states.view(-1, self.set.N_AGENTS * self.set.STATE_SIZE),
                                                  actions_next.view(-1, self.set.N_AGENTS * self.set.ACTION_SIZE))
@@ -177,12 +144,17 @@ class MADDPG():
             # Clip gradients
             torch.nn.utils.clip_grad_norm_(agent.critic_local.parameters(), self.set.CRITIC_GRADIENT_CLIP_VALUE)
             agent.critic_optimizer.step()
+
+            # WandB logging
+            if self.set.WANDB:
+                wandb.log({"critic_loss": critic_loss})
+
             # self.critic_lr_scheduler.step()
 
             # ---------------------------- Update Actor ---------------------------- #
             # Compute actor loss
-            actions_pred = [agent.actor_target(states[:, a, :]) if a == agent_n else
-                            agent.actor_target(states[:, a, :]).detach()         # Detach other agent
+            actions_pred = [self.agents[a].actor_local(states[:, a, :]) if a == agent_n else
+                            self.agents[a].actor_local(states[:, a, :]).detach()  # Detach other agent
                             for a in range(self.set.N_AGENTS)]
             actions_pred = torch.stack(actions_pred, dim=1)
             actor_loss = -agent.critic_local(states.view(-1, self.set.N_AGENTS * self.set.STATE_SIZE),
@@ -193,7 +165,10 @@ class MADDPG():
             torch.nn.utils.clip_grad_norm_(agent.actor_local.parameters(),
                                            self.set.ACTOR_GRADIENT_CLIP_VALUE)
             agent.actor_optimizer.step()
-            # self.actor_lr_scheduler.step()
+
+            # WandB logging
+            if self.set.WANDB:
+                wandb.log({"actor_loss": actor_loss})
 
             # ----------------------- update target networks ----------------------- #
             agent.soft_update(agent.critic_local, agent.critic_target, self.set.TAU)
@@ -206,7 +181,17 @@ class MADDPG():
         # Save agents status
         for i, a in enumerate(self.agents):
             # Actors
-            torch.save(a.actor_local.state_dict(), f'Actor{i + 1}_{name}.pth')
+            actor_name = f'Actor{i + 1}_{name}.pth'
+            torch.save(a.actor_local.state_dict(), actor_name)
+
             # Critic
-            torch.save(a.critic_local.state_dict(), f'Critic{i + 1}_{name}.pth')
-            torch.save(self._parameters, f'Hyperparameters_{name}.pth')
+            critic_name = f'Critic{i + 1}_{name}.pth'
+            torch.save(a.critic_local.state_dict(), critic_name)
+
+            # WandB save models
+            if self.set.WANDB and 'solved' in name:
+                torch.save(a.critic_local.state_dict(), os.path.join(wandb.run.dir, critic_name))
+                torch.save(a.actor_local.state_dict(), os.path.join(wandb.run.dir, actor_name))
+            # Otherwise save hyperparameters locally
+            else:
+                torch.save(self._parameters, f'Hyperparameters_{name}.pth')

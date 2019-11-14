@@ -4,6 +4,7 @@ import numpy as np
 from copy import copy
 from collections import namedtuple, deque
 from itertools import islice
+import wandb
 
 
 class GaussianNoise:
@@ -20,6 +21,7 @@ class GaussianNoise:
         self._eps = self._eps_init
         self._eps_min = eps_min
         self._eps_beta = eps_beta
+        self.reset()
 
     def reset(self):
         """Reset the internal epsilon decay status."""
@@ -29,12 +31,13 @@ class GaussianNoise:
 
     def sample(self):
         """Update internal state and return it as a noise sample."""
-        return np.random.normal(loc=self.mu,
-                                scale=self.sigma,
-                                size=self.size) * self._eps
         # Update epsilon
         self._eps = max([np.exp(-self._eps_beta * self._eps_step), self._eps_min])
         self._eps_step += 1
+
+        return np.random.normal(loc=self.mu,
+                                scale=self.sigma,
+                                size=self.size) * self._eps
 
 
 class OUNoise:
@@ -102,15 +105,19 @@ class ReplayBuffer:
         return len(self.memory)
 
 
-def train_MADDPG(env, agent, n_episodes=2000, max_t=500, success_score=30, deque_len=100, print_every=10,
-                 brain_name='TennisBrain'):
-    """Deep Deterministic Policy Gradients
+def train_MADDPG(env, agent, n_episodes, max_t, success_score, brain_name,
+                 deque_len=100, print_every=100, use_wandb=True):
+    """
+    Training method for Multi Agent Deep Deterministic Policy Gradients.
 
-    Params
-    ======
-        n_episodes (int): maximum number of training episodes
-        max_t (int): maximum number of timesteps per episode
-        success_score (float): average score to consider the task solved.
+    Parameters
+    ----------
+    n_episodes: int
+        Maximum number of training episodes
+    max_t: int
+        Maximum number of timesteps per episode
+    success_score: float
+        Average score to consider the task solved.
     """
     scores_deque = deque(maxlen=deque_len)
     sum_scores_per_agent = []
@@ -146,6 +153,11 @@ def train_MADDPG(env, agent, n_episodes=2000, max_t=500, success_score=30, deque
                                                                                                    min(i_episode, deque_len),
                                                                                                    mean_deque_score,
                                                                                                    max_score), end="")
+        # WandB logging
+        if use_wandb:
+            wandb.log({"Episode": i_episode,
+                       "Score": max_score,
+                       "Average Score": mean_deque_score})
         if i_episode % print_every == 0:
             reversed_scores = copy(scores)
             reversed_scores.reverse()
@@ -162,6 +174,7 @@ def train_MADDPG(env, agent, n_episodes=2000, max_t=500, success_score=30, deque
                                                                                             n_episodes,
                                                                                             min(i_episode, deque_len),
                                                                                             mean_deque_score))
+            wandb.log({"Episode Solved": i_episode})
             solved = True
 
     return scores
