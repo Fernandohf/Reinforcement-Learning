@@ -21,3 +21,4 @@ In this environment, two agents control rackets to bounce a ball over a net. If 
     - Windows (64-bit): [click here](https://s3-us-west-1.amazonaws.com/udacity-drlnd/P3/Tennis/Tennis_Windows_x86_64.zip)
 2. Install the requirements from the `requirements.txt` file.
 3. Run the script `train.py`.
+4. For more details read the file `report.md`.
