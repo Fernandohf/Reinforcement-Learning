@@ -30,7 +30,7 @@ PARAMETERS = {
     'ACTOR_WEIGHT_DECAY': 0.000,       # Actor L2 weight decay
     'ACTOR_GRADIENT_CLIP_VALUE': 5,    # Max gradient modulus for clipping
 
-    'CRITIC_LR': 3e-3,                 # Learning rate of the critic
+    'CRITIC_LR': 1e-3,                 # Learning rate of the critic
     'CRITIC_WEIGHT_DECAY': 0.00001,    # Critic L2 weight decay
     'CRITIC_GRADIENT_CLIP_VALUE': 1,   # Max gradient modulus for clipping
 
