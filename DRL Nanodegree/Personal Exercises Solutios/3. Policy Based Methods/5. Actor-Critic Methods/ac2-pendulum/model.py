@@ -55,7 +55,7 @@ class LSTMActor(nn.Module):
         self.seed = torch.manual_seed(seed)
         # Model
         self.lstm_layer = nn.LSTM(input_size=state_size, hidden_size=hidden_size,
-                                   num_layers=2, batch_first=True, dropout=.1)
+                                  num_layers=2, batch_first=True, dropout=.1)
 
         # Gaussian distribution std
         self.std = nn.Parameter(torch.zeros(action_size))

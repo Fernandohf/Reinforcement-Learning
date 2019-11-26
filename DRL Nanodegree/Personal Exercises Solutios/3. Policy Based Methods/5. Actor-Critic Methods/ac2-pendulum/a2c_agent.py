@@ -15,10 +15,6 @@ except NameError:
     from tqdm import tqdm
 
 # Hyperparameters
-ENV_NAME = 'Pendulum-v0'  # Environment name
-ENV_SEED = 42             # Initial environments seed
-N_ENVS = 12               # parallel environments
-N_STEP_BOOTSTRAP = 5      # Boostrapping step size
 GAMMA = 0.999             # Discount factor
 LR_ACTOR = 1e-4           # Learning rate of the actor
 LR_CRITIC = 1e-3          # Learning rate of the critic
@@ -28,7 +24,7 @@ ACTION_MAX = 2            # Max value in continuous action
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
-class Agent():
+class A2CAgent():
     """Interacts and learns from the environment."""
 
     def __init__(self, state_size, action_size, actor_hidden_size=(32),
@@ -50,7 +46,7 @@ class Agent():
 
         # Actor Network
         # self.actor = Actor(state_size, action_size, actor_hidden_size, random_seed).to(device)
-        self.actor = LSTMActor(state_size, action_size, 128, random_seed).to(device)
+        self.actor = FCActor(state_size, action_size, (128,), random_seed).to(device)
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=LR_ACTOR)
 
         # Critic Network
@@ -65,7 +61,7 @@ class Agent():
 
     def act(self, state, add_noise=True):
         """Returns actions for given state as per current policy."""
-        state = torch.from_numpy(state).float().to(device).unsqueeze(1)
+        state = torch.from_numpy(state).float().to(device)
 
         # Forwards pass on policy
         self.actor.eval()
@@ -94,27 +90,30 @@ class Agent():
             experiences (Tuple[torch.Tensor]): tuple of (s, a, r, s', done) tuples
             gamma (float): discount factor
         """
-        # Using n_step booststraping
-        n_bootstrap = next_states.shape[-1]
-        next_n_states_boot = torch.from_numpy(np.swapaxes(next_states, 1, 2)).float().to(device)
-        next_last_states_boot = torch.from_numpy(next_states[:, :, -1]).float().to(device)
-        states_boot = torch.from_numpy(states[:, :, 0]).float().to(device)
-        actions_boot = torch.from_numpy(actions[:, :, 0]).float().to(device)
-        dones_boot = torch.from_numpy(dones[:, -1]).float().to(device).view(-1, 1)
-        # ---------------------------- update critic ---------------------------- #
+        # Check consistency
+        assert(np.array_equal(states[0, 1, :], next_states[0, 0, :]))
+        # Current state, actions and next_states
+        n_bootstrap = next_states.shape[1]
+        curr_states = torch.from_numpy(next_states[:, 0, :]).float().to(device)
+        curr_actions = torch.from_numpy(actions[:, 0, :]).float().to(device)
+
+        last_boot_next_state = torch.from_numpy(next_states[:, -1, :]).float().to(device)
+        # actions_boot = torch.from_numpy(actions[:, :, 0]).float().to(device)
+        last_dones_boot = torch.from_numpy(dones[:, -1, :]).float().to(device)
+
+        # ---------------------------- Update Critic ---------------------------- #
         # Get predicted next-state actions and Q values from target models
-        # actions_next = self.actor(next_states)
-        actions_n_next, _ = self.actor(next_n_states_boot)
-        discount = gamma ** np.arange(n_bootstrap).reshape(1, -1)
-        rewards = (rewards * discount).sum(axis=1).reshape(-1, 1)
+        actions_n_next, _ = self.actor(last_boot_next_state)
+        discount = gamma ** np.arange(n_bootstrap).reshape(1, -1, 1)
+        rewards = (rewards * discount).sum(axis=1)
 
         rewards_boot = torch.from_numpy(rewards).float().to(device)
-        Q_targets_next = self.critic(next_last_states_boot, actions_n_next)
+        Q_targets_next = self.critic(last_boot_next_state, actions_n_next)
         # Compute Q targets for current states (y_i)
-        Q_targets = rewards_boot + (gamma ** (n_bootstrap) * Q_targets_next * (1. - dones_boot))
+        Q_targets = rewards_boot + ((gamma ** n_bootstrap) * Q_targets_next * (1. - last_dones_boot))
 
         # Compute critic loss
-        Q_expected = self.critic(states_boot, actions_boot)
+        Q_expected = self.critic(curr_states, curr_actions)
         critic_loss = F.mse_loss(Q_expected, Q_targets)
 
         # Minimize the loss
@@ -122,9 +121,9 @@ class Agent():
         critic_loss.backward()
         self.critic_optimizer.step()
 
-        # ---------------------------- update actor ---------------------------- #
+        # ---------------------------- Update Actor ---------------------------- #
         # Compute advantage - actor loss
-        _, log_action_next = (self.actor(states_boot.unsqueeze(1)))
+        _, log_action_next = (self.actor(curr_states))
         advantages = (Q_targets.detach() - Q_expected.detach())
         actor_loss = -(log_action_next * advantages).mean()
         self.actor_optimizer.zero_grad()
@@ -180,7 +179,7 @@ class OUNoise:
         return self.state
 
 
-def train_a2c(mp_envs, agent, episodes=2000, print_every=10):
+def train_a2c(mp_envs, agent, episodes=2000, n_step=5, print_every=10, max_steps=300):
     """
     Train the given agent on the parallel environments provided.
 
@@ -194,6 +193,8 @@ def train_a2c(mp_envs, agent, episodes=2000, print_every=10):
         Number of episodes to train
     print_every: int
         Frequency to display training metrics
+    max_steps: int
+        Maximum number of steps
     """
     # Saving metrics
     avg_scores_deque = deque(maxlen=print_every)
@@ -208,14 +209,14 @@ def train_a2c(mp_envs, agent, episodes=2000, print_every=10):
         agent.reset()
         score = []
         gamma = GAMMA
-        while True:
+        for i in range(max_steps):
             # Collect trajectories
             S, A, R, Sp, dones = n_step_boostrap(mp_envs, agent,
                                                  initial_states,
-                                                 N_STEP_BOOTSTRAP)
+                                                 n_step)
             agent.learn(S, A, R, Sp, dones, gamma)
             # Start from the next state
-            initial_states = Sp[:, :, 1]
+            initial_states = Sp[:, 0, :]
             # Collect scores from all parallel envs
             score.append(R[:, 0])
             # Update initial gamma
