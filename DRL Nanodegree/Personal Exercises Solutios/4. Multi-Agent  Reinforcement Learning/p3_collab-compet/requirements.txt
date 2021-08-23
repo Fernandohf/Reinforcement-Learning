@@ -40,7 +40,7 @@ jupyter-console==6.0.0
 jupyter-core==4.5.0
 jupyter==1.0.0
 jupyterlab-server==1.0.6
-jupyterlab==1.1.4
+jupyterlab==1.2.21
 jupyternotify==0.1.15
 kiwisolver==1.1.0
 line-profiler==2.1.2
