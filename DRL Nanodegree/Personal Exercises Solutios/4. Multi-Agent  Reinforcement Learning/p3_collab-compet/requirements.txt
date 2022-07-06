@@ -24,7 +24,7 @@ gitpython==3.0.4
 gql==0.1.0
 graphql-core==2.2.1
 grpcio==1.11.0
-html5lib==0.9999999
+html5lib==0.999999999
 idna==2.8
 importlib-metadata==0.23
 ipykernel==5.1.3
